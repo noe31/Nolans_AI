@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>GPS Speedometer & Location Tracker</title>
+<style>
+  :root{
+    --bg:#0a0e14;
+    --panel:#121826;
+    --accent:#00e5ff;
+    --accent2:#ff5c5c;
+    --text:#e8ecf1;
+    --muted:#7a8699;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    overflow:hidden; user-select:none;
+  }
+  #app{
+    display:flex; flex-direction:column; height:100vh; width:100vw;
+    padding:14px; gap:12px;
+  }
+  #status{
+    text-align:center; font-size:13px; color:var(--muted); min-height:18px;
+  }
+  #status.active{color:var(--accent);}
+  #status.error{color:var(--accent2);}
+
+  .gauge-row{
+    display:flex; flex:1; gap:12px; min-height:0;
+  }
+  .card{
+    background:var(--panel); border-radius:16px; padding:10px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    flex:1; min-width:0;
+  }
+
+  #speedVal{
+    font-size:clamp(48px, 14vw, 90px); font-weight:700; line-height:1;
+    color:var(--accent);
+  }
+  #speedUnit{
+    font-size:14px; color:var(--muted); margin-top:4px; letter-spacing:1px;
+  }
+  #unitToggle{
+    margin-top:8px; background:transparent; border:1px solid var(--muted);
+    color:var(--text); border-radius:20px; padding:6px 16px; font-size:13px;
+    cursor:pointer;
+  }
+
+  #compassWrap{ position:relative; width:100%; aspect-ratio:1/1; max-width:220px; }
+  #compassSvg{ width:100%; height:100%; transition:transform 0.15s linear; }
+  #headingText{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    text-align:center;
+  }
+  #headingDeg{ font-size:26px; font-weight:700; }
+  #headingCard{ font-size:15px; color:var(--muted); }
+
+  .stats{
+    display:grid; grid-template-columns:1fr 1fr; gap:8px;
+  }
+  .stat{
+    background:var(--panel); border-radius:12px; padding:10px 12px;
+  }
+  .stat .label{ font-size:11px; color:var(--muted); letter-spacing:0.5px; text-transform:uppercase;}
+  .stat .value{ font-size:18px; font-weight:600; margin-top:2px; }
+
+  #startBtn{
+    padding:14px; border-radius:14px; border:none; background:var(--accent);
+    color:#03202a; font-weight:700; font-size:16px; cursor:pointer;
+    transition: opacity 0.2s;
+  }
+  #startBtn:disabled{
+    opacity:0.6; cursor:not-allowed;
+  }
+
+  .footer{ font-size:11px; color:var(--muted); text-align:center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="status">Tap Start to enable location</div>
+
+  <div class="gauge-row">
+    <div class="card">
+      <div id="speedVal">0</div>
+      <div id="speedUnit">MPH</div>
+      <button id="unitToggle">mph ⇄ km/h</button>
+    </div>
+    <div class="card">
+      <div id="compassWrap">
+        <svg id="compassSvg" viewBox="0 0 200 200">
+          <circle cx="100" cy="100" r="94" fill="none" stroke="#26324a" stroke-width="2"/>
+          <g id="ticks"></g>
+          <text x="100" y="20" text-anchor="middle" fill="#ff5c5c" font-size="16" font-weight="700">N</text>
+          <text x="180" y="106" text-anchor="middle" fill="#7a8699" font-size="14">E</text>
+          <text x="100" y="190" text-anchor="middle" fill="#7a8699" font-size="14">S</text>
+          <text x="20" y="106" text-anchor="middle" fill="#7a8699" font-size="14">W</text>
+          <polygon points="100,30 92,110 100,95 108,110" fill="#00e5ff"/>
+        </svg>
+        <div id="headingText">
+          <div id="headingDeg">--°</div>
+          <div id="headingCard">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="label">Altitude</div><div class="value" id="alt">-- m</div></div>
+    <div class="stat"><div class="label">Accuracy</div><div class="value" id="acc">-- m</div></div>
+    <div class="stat"><div class="label">Latitude</div><div class="value" id="lat">--</div></div>
+    <div class="stat"><div class="label">Longitude</div><div class="value" id="lon">--</div></div>
+  </div>
+
+  <button id="startBtn">Enable Location Access</button>
+
+  <div class="footer">Speed derived from GPS. Heading from GPS course (falls back to device compass when stationary).</div>
+</div>
+
+<script>
+const speedVal = document.getElementById('speedVal');
+const speedUnit = document.getElementById('speedUnit');
+const unitToggle = document.getElementById('unitToggle');
+const headingDeg = document.getElementById('headingDeg');
+const headingCard = document.getElementById('headingCard');
+const compassSvg = document.getElementById('compassSvg');
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+const altEl = document.getElementById('alt');
+const accEl = document.getElementById('acc');
+const latEl = document.getElementById('lat');
+const lonEl = document.getElementById('lon');
+const ticksG = document.getElementById('ticks');
+
+// Draw compass tick marks
+for(let i=0; i<360; i+=30){
+  const rad = i * Math.PI/180;
+  const x1 = 100 + 84*Math.sin(rad), y1 = 100 - 84*Math.cos(rad);
+  const x2 = 100 + 94*Math.sin(rad), y2 = 100 - 94*Math.cos(rad);
+  const line = document.createElementNS("http://www.w3.org/2000/svg","line");
+  line.setAttribute("x1",x1); line.setAttribute("y1",y1);
+  line.setAttribute("x2",x2); line.setAttribute("y2",y2);
+  line.setAttribute("stroke","#3a4a68"); line.setAttribute("stroke-width","2");
+  ticksG.appendChild(line);
+}
+
+let useMph = true;
+let lastHeading = 0;
+let watchId = null;
+
+const cardinals = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+function toCardinal(deg){
+  const idx = Math.round(deg / 22.5) % 16;
+  return cardinals[idx];
+}
+
+function setHeadingDisplay(deg){
+  if(deg === null || deg === undefined || isNaN(deg)) return;
+  deg = (deg + 360) % 360;
+  lastHeading = deg;
+  headingDeg.textContent = Math.round(deg) + '°';
+  headingCard.textContent = toCardinal(deg);
+  compassSvg.style.transform = `rotate(${-deg}deg)`;
+}
+
+function updateSpeed(mps){
+  if(mps === null || mps === undefined || isNaN(mps) || mps < 0){
+    speedVal.textContent = '0';
+    return;
+  }
+  const val = useMph ? mps * 2.23694 : mps * 3.6;
+  speedVal.textContent = val.toFixed(1);
+}
+
+unitToggle.addEventListener('click', ()=>{
+  useMph = !useMph;
+  speedUnit.textContent = useMph ? 'MPH' : 'KM/H';
+});
+
+function handlePosition(pos){
+  const c = pos.coords;
+  statusEl.textContent = 'GPS active';
+  statusEl.className = 'active';
+
+  startBtn.textContent = 'Location Active';
+  startBtn.disabled = true;
+
+  updateSpeed(c.speed);
+  if(c.heading !== null && c.heading !== undefined && !isNaN(c.heading)){
+    setHeadingDisplay(c.heading);
+  }
+  altEl.textContent = (c.altitude !== null && c.altitude !== undefined) ? c.altitude.toFixed(1) + ' m' : '-- m';
+  accEl.textContent = c.accuracy ? c.accuracy.toFixed(0) + ' m' : '-- m';
+  latEl.textContent = c.latitude.toFixed(5);
+  lonEl.textContent = c.longitude.toFixed(5);
+}
+
+function handleError(err){
+  startBtn.disabled = false;
+  startBtn.textContent = 'Retry Location Access';
+  statusEl.className = 'error';
+
+  switch (err.code) {
+    case err.PERMISSION_DENIED:
+      statusEl.textContent = 'Permission denied. Allow location in browser settings.';
+      break;
+    case err.POSITION_UNAVAILABLE:
+      statusEl.textContent = 'Location signal unavailable.';
+      break;
+    case err.TIMEOUT:
+      statusEl.textContent = 'Location request timed out.';
+      break;
+    default:
+      statusEl.textContent = 'GPS error: ' + err.message;
+      break;
+  }
+}
+
+function requestLocation() {
+  if (!navigator.geolocation) {
+    statusEl.textContent = 'Geolocation is not supported by your browser.';
+    statusEl.className = 'error';
+    return;
+  }
+
+  statusEl.textContent = 'Acquiring location position...';
+  statusEl.className = '';
+  startBtn.textContent = 'Requesting...';
+  startBtn.disabled = true;
+
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+  }
+
+  watchId = navigator.geolocation.watchPosition(handlePosition, handleError, {
+    enableHighAccuracy: true,
+    maximumAge: 500,
+    timeout: 10000
+  });
+
+  startCompassFallback();
+}
+
+function checkPermissions() {
+  if (!navigator.permissions) return;
+
+  navigator.permissions.query({ name: 'geolocation' }).then(result => {
+    if (result.state === 'granted') {
+      requestLocation();
+    } else if (result.state === 'denied') {
+      statusEl.textContent = 'Location access is blocked in browser settings.';
+      statusEl.className = 'error';
+    }
+
+    result.onchange = () => {
+      if (result.state === 'granted') {
+        requestLocation();
+      } else if (result.state === 'denied') {
+        statusEl.textContent = 'Location access is blocked in browser settings.';
+        statusEl.className = 'error';
+        startBtn.disabled = false;
+        startBtn.textContent = 'Enable Location Access';
+      }
+    };
+  }).catch(() => {});
+}
+
+function startCompassFallback(){
+  function orientHandler(e){
+    let heading = null;
+    if(e.webkitCompassHeading !== undefined){
+      heading = e.webkitCompassHeading;
+    } else if(e.absolute && e.alpha !== null){
+      heading = 360 - e.alpha;
+    }
+    if(heading !== null) setHeadingDisplay(heading);
+  }
+
+  if(typeof DeviceOrientationEvent !== 'undefined' &&
+     typeof DeviceOrientationEvent.requestPermission === 'function'){
+    DeviceOrientationEvent.requestPermission().then(state=>{
+      if(state === 'granted'){
+        window.addEventListener('deviceorientationabsolute', orientHandler, true);
+        window.addEventListener('deviceorientation', orientHandler, true);
+      }
+    }).catch(()=>{});
+  } else {
+    window.addEventListener('deviceorientationabsolute', orientHandler, true);
+    window.addEventListener('deviceorientation', orientHandler, true);
+  }
+}
+
+startBtn.addEventListener('click', requestLocation);
+document.addEventListener('DOMContentLoaded', checkPermissions);
+</script>
+</body>
+</html>
